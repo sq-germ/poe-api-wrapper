@@ -579,5 +579,19 @@
             "1295x809": "--aspect 16:10",
             "809x1295": "--aspect 10:16"
         }
+    },
+
+    "FLUX-pro": {
+        "baseModel": "fluxpro",
+        "tokens": 80,
+        "endpoints": ["/v1/images/generations", "/v1/images/edits"],
+        "premium_model": true,
+        "object": "model",
+        "owned_by": "fal",
+        "sizes": {
+            "1024x1024": "--aspect 1:1",
+            "1792x1024": "--aspect 7:4",
+            "1024x1792": "--aspect 4:7"
+        }
     }
 }
