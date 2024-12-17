@@ -1,5 +1,5 @@
 from httpx import AsyncClient, ConnectError, ReadTimeout
-import asyncio, queue, orjson, random, ssl, threading, websocket, string, secrets, os, hashlib, re, aiofiles
+import asyncio, orjson, random, ssl, threading, websocket, string, secrets, os, hashlib, re, aiofiles
 from typing import  AsyncIterator
 from loguru import logger
 from requests_toolbelt import MultipartEncoder
@@ -130,7 +130,7 @@ class AsyncPoeApi:
     async def send_request(self, path: str, query_name: str="", variables: dict={}, file_form: list=[], knowledge: bool=False, ratelimit: int = 0):
         if ratelimit > 0:
             logger.warning(f"Waiting queue {ratelimit}/2 to avoid rate limit")
-            asyncio.sleep(random.randint(2, 3))
+            await asyncio.sleep(random.randint(2, 3))
         status_code = 0
         
         try:
@@ -158,6 +158,16 @@ class AsyncPoeApi:
             
             status_code = response.status_code
             
+            if status_code == 403:
+                if ratelimit < 2:
+                    logger.warning(f"Received 403 status code, retrying... (attempt {ratelimit + 1}/2)")
+                    return await self.send_request(path, query_name, variables, file_form, ratelimit=ratelimit + 1)
+                else:
+                    raise Exception(f"Max retries reached after receiving 403 status code")
+
+            if not response.text:
+                raise Exception(f"Empty response with status code {status_code}")
+
             json_data = orjson.loads(response.text)
 
             if (
@@ -351,7 +361,7 @@ class AsyncPoeApi:
                                             "data": data,
                                             "subscription": subscriptionName,
                                         }),
-                                        self.loop  # 需要在类中保存事件循环的引用
+                                        self.loop
                                     )
                     if subscriptionName == "messageAdded":
                         self.active_messages[chat_id] = data["messageAdded"]["messageId"]          
@@ -371,7 +381,7 @@ class AsyncPoeApi:
         if chatId in self.message_queues:
             while not self.message_queues[chatId].empty():
                 try:
-                    await self.message_queues[chatId].get_nowait()
+                    self.message_queues[chatId].get_nowait()
                 except asyncio.QueueEmpty:
                     pass
             del self.message_queues[chatId]
@@ -769,13 +779,19 @@ class AsyncPoeApi:
                         raise RuntimeError(f"Daily limit reached for {bot}.")
                     elif status == 'too_many_tokens':
                         raise RuntimeError(f"{message_data['data']['messageEdgeCreate']['statusMessage']}")
+                    elif status == 'no_access':
+                        raise RuntimeError(f"{message_data['data']['messageEdgeCreate']['statusMessage']}")
                     elif status in ('rate_limit_exceeded', 'concurrent_messages'):
                         await self.delete_pending_messages(prompt_md5)
                         await asyncio.sleep(random.randint(4, 6))
                         async for chunk in self.send_message(bot, message, chatId, chatCode, msgPrice, file_path, suggest_replies, timeout):
                             yield chunk
                         return
-                        
+
+                    chat_data = message_data['data']['messageEdgeCreate'].get('chat')
+                    if not chat_data:
+                        raise RuntimeError(f"Failed to create chat: {message_data['data']['messageEdgeCreate'].get('statusMessage', 'Unknown error')}")
+
                     logger.info(f"New Thread created | {message_data['data']['messageEdgeCreate']['chat']['chatCode']}")
                 
                 message_data = message_data['data']['messageEdgeCreate']['chat']
@@ -826,6 +842,8 @@ class AsyncPoeApi:
                         raise RuntimeError(f"Daily limit reached for {bot}.")
                     elif status == 'too_many_tokens':
                         raise RuntimeError(f"{message_data['data']['messageEdgeCreate']['statusMessage']}")
+                    elif status == 'no_access':
+                        raise RuntimeError(f"{message_data['data']['messageEdgeCreate']['statusMessage']}")
                     elif status in ('rate_limit_exceeded', 'concurrent_messages'):
                         await self.delete_pending_messages(prompt_md5)
                         await asyncio.sleep(random.randint(4, 6))
@@ -839,7 +857,7 @@ class AsyncPoeApi:
                 raise e
                     
         self.active_messages[chatId] = None
-        self.message_queues[chatId] = queue.Queue()
+        self.message_queues[chatId] = asyncio.Queue()
 
         last_text = ""     
         stateChange = False
